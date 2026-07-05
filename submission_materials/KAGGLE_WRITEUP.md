@@ -3,7 +3,7 @@
 **Project Name**: MediSafe - The Plain-English Medicine Safety Guardian  
 **Target Track**: Agents for Good / Concierge Agents  
 **Authors**: Joe  
-**Public Code Repository**: [GitHub Link Placeholder]  
+**Public Code Repository**: https://github.com/Joe456789/Capstone-Project
 **Interactive Demo Link**: https://medisafe-277759971577.asia-east1.run.app  
 
 ---
