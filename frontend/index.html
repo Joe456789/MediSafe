@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediSafe | Medicine Guardian</title>
+    <link rel="stylesheet" href="style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="background-blob blob-1"></div>
+    <div class="background-blob blob-2"></div>
+    
+    <div class="container">
+        <header>
+            <div class="header-main">
+                <h1>MediSafe <span class="emoji">🛡️</span></h1>
+                <div class="lang-switch">
+                    <button id="langEn" class="lang-btn active">🇬🇧 EN</button>
+                    <button id="langZh" class="lang-btn">🇹🇼 中文</button>
+                </div>
+            </div>
+            <p>Your plain-English medicine safety translator</p>
+        </header>
+        
+        <main>
+            <div class="search-box glass-panel">
+                <input type="text" id="ingredientInput" placeholder="Enter a medicine name or active ingredient (e.g. Acetaminophen, Tylenol)...">
+                <input type="file" id="imageInput" accept="image/*" class="hidden">
+                <button id="uploadBtn" title="Upload Photo of Medicine" class="icon-btn">📷</button>
+                <button id="analyzeBtn">Analyze Safety</button>
+            </div>
+            
+            <div id="imagePreviewContainer" class="hidden">
+                <p class="preview-text">Selected Image:</p>
+                <img id="imagePreview" src="" alt="Medicine Photo">
+                <button id="clearImageBtn" class="clear-btn">❌</button>
+            </div>
+            
+            <div class="trending-container">
+                <h3>Trending Safety Checks</h3>
+                <div class="med-cards">
+                    <div class="med-card glass-panel" data-med="Acetaminophen">
+                        <span class="card-icon">🤒</span>
+                        <h4>Cold & Headache</h4>
+                        <p class="med-sub">Acetaminophen / Tylenol</p>
+                    </div>
+                    <div class="med-card glass-panel" data-med="Ibuprofen">
+                        <span class="card-icon">💊</span>
+                        <h4>Pain & Inflammation</h4>
+                        <p class="med-sub">Ibuprofen / Advil</p>
+                    </div>
+                    <div class="med-card glass-panel" data-med="Antacid">
+                        <span class="card-icon">🩺</span>
+                        <h4>Stomachache & Acid</h4>
+                        <p class="med-sub">Calcium Carbonate / Mylanta</p>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="loader" class="hidden">
+                <div class="spinner"></div>
+                <p id="loaderText">Agents are gathering data from FDA, PubMed, and Clinical Trials...</p>
+            </div>
+
+            <div id="result" class="hidden glass-panel result-panel">
+                <div class="result-header">
+                    <div class="header-left">
+                        <div id="safetyBadge" class="safety-badge">🟢 SAFE</div>
+                        <h2 id="resultIngredient">Ingredient</h2>
+                    </div>
+                    <div class="pill-preview-wrapper">
+                        <div id="cssPill" class="css-pill"></div>
+                        <span id="pillLabel" class="pill-label">White Tablet</span>
+                        <span id="pillNote" class="pill-note">*Representative model. Actual pill appearance may vary.</span>
+                    </div>
+                </div>
+                
+                <div class="food-warnings-section">
+                    <h3>Food & Drink Interactions</h3>
+                    <div class="food-grid">
+                        <div class="food-item" id="food-alcohol">
+                            <span class="food-icon">🍷</span>
+                            <span class="food-name">Alcohol</span>
+                            <span class="food-status">Safe</span>
+                        </div>
+                        <div class="food-item" id="food-dairy">
+                            <span class="food-icon">🥛</span>
+                            <span class="food-name">Dairy</span>
+                            <span class="food-status">Safe</span>
+                        </div>
+                        <div class="food-item" id="food-grapefruit">
+                            <span class="food-icon">🍇</span>
+                            <span class="food-name">Grapefruit</span>
+                            <span class="food-status">Safe</span>
+                        </div>
+                        <div class="food-item" id="food-caffeine">
+                            <span class="food-icon">☕</span>
+                            <span class="food-name">Caffeine</span>
+                            <span class="food-status">Safe</span>
+                        </div>
+                    </div>
+                    <p id="foodWarningDetail" class="food-warning-detail"></p>
+                </div>
+                
+                <div class="report-section">
+                    <div class="report-header">
+                        <h3>AI Safety Translation</h3>
+                        <button id="speakBtn" class="speak-btn" title="Listen to Report">🔊 Speak</button>
+                    </div>
+                    <div id="reportContent" class="markdown-body"></div>
+                </div>
+
+                <div id="dosageCalculator" class="dosage-calculator-section">
+                    <h3>👶 Pediatric Dosage Calculator</h3>
+                    <p class="calc-description">Estimate child dosage based on weight. (Consult a doctor before administering!)</p>
+                    <div class="calc-controls">
+                        <label for="weightRange">Child's Weight (kg):</label>
+                        <input type="range" id="weightRange" min="5" max="50" value="15" step="1">
+                        <span id="weightDisplay">15 kg</span>
+                    </div>
+                    <div id="calcResult" class="calc-result">
+                        Estimated Safe Dose: <strong id="calculatedDose">150mg - 225mg</strong> per dose.
+                    </div>
+                </div>
+
+                <div class="result-actions">
+                    <button id="reminderBtn" class="action-btn">⏰ Get Dose Reminder</button>
+                    <button id="pdfBtn" class="action-btn">📄 Save as PDF</button>
+                </div>
+                
+                <div class="raw-data-section">
+                    <details>
+                        <summary>View Raw Database Findings (Data Fetcher Agent)</summary>
+                        <pre id="rawDataContent"></pre>
+                    </details>
+                </div>
+                
+                <div class="disclaimer alert-warning">
+                    <p id="disclaimerText"></p>
+                </div>
+
+                <div class="chat-section">
+                    <h3>💬 Have questions? Ask AI Pharmacist</h3>
+                    <div id="chatHistory" class="chat-history">
+                        <div class="chat-message bot-message">
+                            Hi! I'm your AI pharmacist. Ask me anything about this medicine.
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <input type="text" id="chatInput" placeholder="Can I take this with milk? What if I miss a dose?...">
+                        <button id="sendChatBtn">Ask</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div id="triagePanel" class="hidden triage-panel glass-panel">
+                <div class="triage-header">
+                    <span class="warning-icon">⚠️</span>
+                    <h2>Critical Allergy Alert (HITL Triage)</h2>
+                </div>
+                <p id="triageWarningText"></p>
+                <div class="triage-actions">
+                    <button id="triageApproveBtn" class="danger-btn">Approve & Override (Pharmacist)</button>
+                    <button id="triageCancelBtn" class="cancel-btn-triage">Cancel</button>
+                </div>
+            </div>
+            
+            <div id="error" class="hidden error-panel glass-panel">
+                <p id="errorText"></p>
+            </div>
+        </main>
+    </div>
+    
+    <!-- Use marked.js to render markdown from Gemini -->
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
