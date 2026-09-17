@@ -90,13 +90,13 @@ def build_menu_image() -> bytes:
     img = Image.new("RGB", (WIDTH, HEIGHT), "#F7F8FA")
 
     buttons = [
-        ("#22D07A", "#06A85A", _draw_cross_icon, "過敏資料登記", "填寫過敏原 / 家屬通知"),
-        ("#FFC24B", "#F08A1F", _draw_bell_icon, "服藥提醒", "設定或取消提醒時間"),
-        ("#5FA8F5", "#2E6FD9", _draw_info_icon, "使用說明", "查看完整功能選單"),
+        ("#22D07A", "#06A85A", _draw_cross_icon, "過敏資料登記", "登記過敏原"),
+        ("#FFC24B", "#F08A1F", _draw_bell_icon, "服藥提醒", "設定/取消提醒"),
+        ("#5FA8F5", "#2E6FD9", _draw_info_icon, "使用說明", "查看完整說明"),
     ]
 
-    title_font = _load_font(76)
-    sub_font = _load_font(38)
+    title_font = _load_font(90)
+    sub_font = _load_font(52)
 
     for i, (top_color, bottom_color, icon_fn, title, subtitle) in enumerate(buttons):
         x0 = i * COLUMN_WIDTH + MARGIN
