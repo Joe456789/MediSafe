@@ -7,13 +7,17 @@ Official Account:
   Message "traffic light" card pushed back with a link into the LIFF report page.
 - User sends a text message -> treated as a follow-up question answered by the
   AI Pharmacist logic, using the last analyzed report as context.
-- POST /line/send-reminders is meant to be hit by a Cloud Scheduler job and
-  pushes a reminder text to every user who has registered a dose time
-  (send a message like "提醒 08:00" to register one).
+- POST /line/send-reminders is meant to be hit by a Cloud Scheduler job once
+  an hour. Each user can register their own dose time(s) by texting e.g.
+  "提醒 08:00" or "提醒 早上"/"提醒 中午"/"提醒 晚上"; times are rounded to the
+  nearest hour, and only users whose reminder matches the current hour
+  (Asia/Taipei) get pushed on a given run.
 """
 import base64
 import os
 import re
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Request
 from linebot import LineBotApi, WebhookParser
@@ -68,6 +72,23 @@ SAFETY_LABELS = {
 }
 
 REMINDER_PATTERN = re.compile(r"(?:提醒|remind)\D*(\d{1,2}):?(\d{2})", re.IGNORECASE)
+REMINDER_KEYWORD_TIMES = {
+    "早上": "08:00", "早": "08:00", "morning": "08:00",
+    "中午": "12:00", "noon": "12:00",
+    "晚上": "18:00", "晚": "18:00", "evening": "18:00", "night": "18:00",
+}
+REMINDER_KEYWORD_PATTERN = re.compile(
+    r"(?:提醒|remind)\D*(" + "|".join(REMINDER_KEYWORD_TIMES.keys()) + r")", re.IGNORECASE
+)
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+
+
+def _round_to_hour(time_str: str) -> str:
+    """Rounds an 'HH:MM' string to the nearest hour, e.g. '08:37' -> '09:00'."""
+    hour, minute = map(int, time_str.split(":"))
+    if minute >= 30:
+        hour = (hour + 1) % 24
+    return f"{hour:02d}:00"
 
 
 def build_traffic_light_flex(report: dict) -> FlexSendMessage:
@@ -168,12 +189,18 @@ def process_image_message(user_id: str, message_id: str):
 def process_text_message(user_id: str, reply_token: str, text: str):
     line_bot_api = get_line_bot_api()
 
+    keyword_match = REMINDER_KEYWORD_PATTERN.search(text)
     reminder_match = REMINDER_PATTERN.search(text)
-    if reminder_match:
-        time_str = f"{int(reminder_match.group(1)):02d}:{reminder_match.group(2)}"
+    if keyword_match or reminder_match:
+        if keyword_match:
+            raw_time = REMINDER_KEYWORD_TIMES[keyword_match.group(1).lower()]
+        else:
+            raw_time = f"{int(reminder_match.group(1)):02d}:{reminder_match.group(2)}"
+        time_str = _round_to_hour(raw_time)
         add_reminder(user_id, time_str)
         line_bot_api.reply_message(
-            reply_token, TextSendMessage(text=f"✅ 已為您登記每日 {time_str} 的服藥提醒。")
+            reply_token,
+            TextSendMessage(text=f"✅ 已為您登記每日 {time_str} 的服藥提醒（會自動取整點）。"),
         )
         return
 
@@ -239,13 +266,18 @@ async def get_report(user_id: str):
 
 @router.post("/send-reminders")
 async def send_reminders():
-    """Meant to be triggered by Cloud Scheduler. Pushes a reminder to every registered user."""
+    """Meant to be triggered by Cloud Scheduler once an hour. Only pushes to users
+    whose registered reminder time matches the current hour in Asia/Taipei, so
+    each user effectively gets their own schedule (e.g. morning/noon/evening)."""
     line_bot_api = get_line_bot_api()
+    current_hour_slot = datetime.now(TAIPEI_TZ).strftime("%H:00")
     reminders = list_all_reminders()
     sent, failed = 0, 0
 
     for user_id, entries in reminders.items():
         for entry in entries:
+            if entry.get("time") != current_hour_slot:
+                continue
             try:
                 line_bot_api.push_message(
                     user_id,
@@ -256,4 +288,4 @@ async def send_reminders():
                 print(f"[LINE Warning] Failed to push reminder to {user_id}: {e}")
                 failed += 1
 
-    return {"sent": sent, "failed": failed}
+    return {"hour_slot": current_hour_slot, "sent": sent, "failed": failed}
