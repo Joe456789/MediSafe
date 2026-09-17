@@ -20,9 +20,10 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy backend and frontend source directories
+# (No .env copy: secrets are injected at runtime via Cloud Run env vars,
+# never baked into the image.)
 COPY backend/ ./backend/
 COPY frontend/ ./frontend/
-COPY .env .
 
 # Cloud Run defaults to injecting the PORT environment variable (default 8080)
 EXPOSE 8080

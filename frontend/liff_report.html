@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>MediSafe 用藥安全報告</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  :root {
+    --line-green: #06C755;
+    --line-green-dark: #05a648;
+    --bg: #f7f8fa;
+    --card-radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--bg);
+    color: #222;
+  }
+  .container { max-width: 480px; margin: 0 auto; padding: 16px; }
+
+  .state-box { text-align: center; padding: 60px 16px; color: #888; }
+
+  .banner {
+    border-radius: var(--card-radius);
+    padding: 20px;
+    color: #fff;
+    margin-bottom: 16px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+  .banner.safe { background: linear-gradient(135deg, #06C755, #04a647); }
+  .banner.warning { background: linear-gradient(135deg, #f5a623, #e08e00); }
+  .banner.danger { background: linear-gradient(135deg, #e6473f, #c62f28); }
+  .banner .emoji { font-size: 40px; line-height: 1; }
+  .banner .status-label { font-size: 18px; font-weight: bold; margin-top: 4px; }
+  .banner .ingredient-name { font-size: 22px; font-weight: bold; margin-top: 8px; }
+
+  .card {
+    background: #fff;
+    border-radius: var(--card-radius);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .card h2 {
+    font-size: 15px;
+    color: var(--line-green-dark);
+    margin: 0 0 12px 0;
+  }
+
+  .food-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+  .food-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: 12px;
+    background: #f2f4f6;
+    font-size: 14px;
+  }
+  .food-item .icon { font-size: 20px; }
+  .food-item .pill {
+    margin-left: auto;
+    font-size: 12px;
+    font-weight: bold;
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .pill.ok { background: #e3f9ea; color: var(--line-green-dark); }
+  .pill.avoid { background: #fdeaea; color: #c62f28; }
+
+  .report-body {
+    font-size: 14px;
+    line-height: 1.7;
+    white-space: pre-wrap;
+  }
+
+  .disclaimer {
+    font-size: 12px;
+    color: #999;
+    text-align: center;
+    padding: 8px 16px 24px;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="loading" class="state-box">正在載入您的用藥安全報告...</div>
+  <div id="error" class="state-box" style="display:none;"></div>
+  <div id="content" style="display:none;">
+    <div id="banner" class="banner">
+      <div class="emoji" id="banner-emoji">🟡</div>
+      <div class="status-label" id="banner-label">注意</div>
+      <div class="ingredient-name" id="banner-ingredient"></div>
+    </div>
+
+    <div class="card">
+      <h2>🍽️ 食物交互作用</h2>
+      <div class="food-grid" id="food-grid"></div>
+    </div>
+
+    <div class="card">
+      <h2>💊 完整用藥小叮嚀</h2>
+      <div class="report-body" id="report-body"></div>
+    </div>
+  </div>
+  <div class="disclaimer">本報告由 AI 生成，僅供參考，不能取代專業醫療建議，請務必諮詢醫師或藥師。</div>
+</div>
+
+<script>
+// TODO: 填入你在 LINE Developers Console 建立的 LIFF ID
+const LIFF_ID = "REPLACE_WITH_YOUR_LIFF_ID";
+
+// Backend API base. Same-origin by default; change if LIFF is hosted separately from the FastAPI backend.
+const API_BASE = "";
+
+const FOOD_LABELS = {
+  alcohol: { icon: "🍷", name: "酒精" },
+  dairy: { icon: "🥛", name: "乳製品" },
+  grapefruit: { icon: "🍊", name: "葡萄柚" },
+  caffeine: { icon: "☕", name: "咖啡因" },
+};
+
+const SAFETY_META = {
+  safe: { emoji: "🟢", label: "安全", cls: "safe" },
+  warning: { emoji: "🟡", label: "注意", cls: "warning" },
+  danger: { emoji: "🔴", label: "危險", cls: "danger" },
+};
+
+function showError(message) {
+  document.getElementById("loading").style.display = "none";
+  const errorBox = document.getElementById("error");
+  errorBox.style.display = "block";
+  errorBox.textContent = message;
+}
+
+function renderReport(report) {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("content").style.display = "block";
+
+  const meta = SAFETY_META[report.safety_level] || SAFETY_META.warning;
+  const banner = document.getElementById("banner");
+  banner.classList.add(meta.cls);
+  document.getElementById("banner-emoji").textContent = meta.emoji;
+  document.getElementById("banner-label").textContent = meta.label;
+  document.getElementById("banner-ingredient").textContent = report.ingredient || "";
+
+  const foodGrid = document.getElementById("food-grid");
+  const foodWarnings = report.food_warnings || {};
+  foodGrid.innerHTML = "";
+  Object.keys(FOOD_LABELS).forEach((key) => {
+    const info = FOOD_LABELS[key];
+    const verdict = foodWarnings[key] === "avoid" ? "avoid" : "ok";
+    const item = document.createElement("div");
+    item.className = "food-item";
+    item.innerHTML = `
+      <span class="icon">${info.icon}</span>
+      <span>${info.name}</span>
+      <span class="pill ${verdict}">${verdict === "avoid" ? "避免" : "OK"}</span>
+    `;
+    foodGrid.appendChild(item);
+  });
+
+  document.getElementById("report-body").textContent = report.report || "";
+}
+
+async function fetchReport(userId) {
+  const res = await fetch(`${API_BASE}/line/report/${encodeURIComponent(userId)}`);
+  if (res.status === 404) {
+    throw new Error("目前還沒有分析紀錄，請先在 LINE 對話中傳送一張藥品照片。");
+  }
+  if (!res.ok) {
+    throw new Error(`讀取報告失敗（HTTP ${res.status}）`);
+  }
+  return res.json();
+}
+
+async function main() {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return;
+    }
+    const profile = await liff.getProfile();
+    const report = await fetchReport(profile.userId);
+    renderReport(report);
+  } catch (err) {
+    console.error(err);
+    showError(err.message || "載入報告時發生錯誤，請稍後再試。");
+  }
+}
+
+main();
+</script>
+</body>
+</html>

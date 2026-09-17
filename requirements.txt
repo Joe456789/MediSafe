@@ -5,3 +5,4 @@ pydantic
 google-genai
 python-dotenv
 aiofiles
+line-bot-sdk
