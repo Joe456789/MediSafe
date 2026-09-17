@@ -100,8 +100,23 @@ def extract_ingredient_from_image(base64_data: str, mime_type: str) -> str:
     print(f"Extracted ingredient: {extracted_name}")
     return extracted_name
 
-def analyze_ingredient(ingredient: str, bypass_triage: bool = False, lang: str = "en") -> dict:
-    # 0. Check in-memory cache with TTL
+def analyze_ingredient(ingredient: str, bypass_triage: bool = False, lang: str = "en", user_allergies: list | None = None, patient_name: str = "John Doe") -> dict:
+    # 0a. Per-user allergy check (e.g. LINE users with their own registered profile).
+    # Done before the shared cache lookup and skips the MCP subprocess entirely,
+    # since a triage result here is specific to this user's allergy list and must
+    # never be served from the shared ingredient-level cache to a different user.
+    if not bypass_triage and user_allergies is not None:
+        allergies_lower = [a.lower() for a in user_allergies]
+        if ingredient.lower() in allergies_lower:
+            print(f"[Profile Alert] User allergy detected for: {ingredient}")
+            return {
+                "status": "requires_triage",
+                "ingredient": ingredient,
+                "patient_name": patient_name,
+                "allergies": user_allergies,
+            }
+
+    # 0b. Check in-memory cache with TTL
     key_name = ingredient.lower().strip()
     cache_key = (key_name, lang, bypass_triage)
     cached_val = get_from_cache(cache_key)
@@ -110,7 +125,8 @@ def analyze_ingredient(ingredient: str, bypass_triage: bool = False, lang: str =
         return cached_val
 
     # 1. MCP Allergy Check (Day 2 MCP Integration via Standard stdio JSON-RPC 2.0 Subprocess)
-    if not bypass_triage:
+    # Only used as a fallback when the caller didn't supply user_allergies directly.
+    if not bypass_triage and user_allergies is None:
         try:
             # Spawn user profile MCP server as a subprocess communicating over stdio
             process = subprocess.Popen(

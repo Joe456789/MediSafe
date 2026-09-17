@@ -31,7 +31,9 @@ from linebot.models import (
     QuickReplyButton,
     TextMessage,
     TextSendMessage,
+    URIAction,
 )
+from pydantic import BaseModel
 
 from backend.agents.agent_system import (
     analyze_ingredient,
@@ -41,9 +43,14 @@ from backend.agents.agent_system import (
 from backend.line_store import (
     add_reminder,
     clear_reminders,
+    create_family_link_code,
+    get_family_members,
     get_latest_report,
+    get_profile,
     get_reminders,
     list_all_reminders,
+    redeem_family_link_code,
+    save_profile,
     save_report,
 )
 
@@ -52,6 +59,7 @@ router = APIRouter(prefix="/line", tags=["line"])
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 LIFF_REPORT_URL = os.environ.get("LIFF_REPORT_URL", "https://liff.line.me/REPLACE_ME")
+LIFF_PROFILE_URL = os.environ.get("LIFF_PROFILE_URL", "https://liff.line.me/REPLACE_ME")
 
 _line_bot_api = None
 _parser = None
@@ -102,16 +110,21 @@ def _round_to_hour(time_str: str) -> str:
 
 
 HELP_TRIGGERS = {"選單", "menu", "使用方法", "說明", "help", "提醒設定"}
+FAMILY_BIND_PATTERN = re.compile(r"(?:綁定|bind)\D*(\d{6})", re.IGNORECASE)
+FAMILY_CODE_TRIGGERS = {"家屬通知", "家屬綁定", "產生代碼", "通知代碼"}
 
 
 def reminder_quick_reply() -> QuickReply:
-    """Buttons for setting/canceling reminders without having to type anything."""
+    """Buttons for setting/canceling reminders, plus a shortcut to the allergy
+    profile form, without the user having to type anything."""
     return QuickReply(
         items=[
             QuickReplyButton(action=MessageAction(label="🌅 早上提醒", text="提醒 早上")),
             QuickReplyButton(action=MessageAction(label="☀️ 中午提醒", text="提醒 中午")),
             QuickReplyButton(action=MessageAction(label="🌙 晚上提醒", text="提醒 晚上")),
             QuickReplyButton(action=MessageAction(label="❌ 取消全部提醒", text="取消提醒")),
+            QuickReplyButton(action=URIAction(label="📋 過敏資料登記", uri=LIFF_PROFILE_URL)),
+            QuickReplyButton(action=MessageAction(label="👨‍👩‍👧 家屬通知代碼", text="家屬通知")),
         ]
     )
 
@@ -121,7 +134,9 @@ def build_help_message() -> TextSendMessage:
         "📖 MediSafe 使用方法\n\n"
         "1️⃣ 傳一張藥品照片或藥袋照片給我，我會幫您分析用藥安全並回傳報告\n"
         "2️⃣ 收到報告後，可以直接打字追問（例如：可以跟感冒藥一起吃嗎？）\n"
-        "3️⃣ 點下方按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n\n"
+        "3️⃣ 點「過敏資料登記」填寫過敏原，之後分析會自動比對並示警\n"
+        "4️⃣ 點按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n"
+        "5️⃣ 點「家屬通知代碼」產生代碼，請家屬在對話框輸入「綁定 該代碼」，之後過敏示警會同步通知家屬\n\n"
         "隨時輸入「選單」可以再叫出這個說明。"
     )
     return TextSendMessage(text=text, quick_reply=reminder_quick_reply())
@@ -185,6 +200,29 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
     )
 
 
+def _notify_family_of_alert(line_bot_api: LineBotApi, patient_user_id: str, ingredient: str, allergies: str):
+    """Pushes the same allergy-conflict warning to every family member linked
+    to this patient via a redeemed linking code."""
+    family_ids = get_family_members(patient_user_id)
+    if not family_ids:
+        return
+    try:
+        patient_name = line_bot_api.get_profile(patient_user_id).display_name
+    except LineBotApiError:
+        patient_name = "您登記關注的使用者"
+    for family_id in family_ids:
+        try:
+            line_bot_api.push_message(
+                family_id,
+                TextSendMessage(
+                    text=f"⚠️ 用藥安全通知\n{patient_name} 剛剛掃描的藥品「{ingredient}」"
+                    f"可能與登記的過敏原（{allergies}）相關，系統已擋下自動分析，請主動關心並協助確認用藥安全。"
+                ),
+            )
+        except LineBotApiError as e:
+            print(f"[LINE Warning] Failed to notify family member {family_id}: {e}")
+
+
 def process_image_message(user_id: str, message_id: str):
     """Runs the full Vision -> Data Fetcher -> Translator pipeline and pushes the result."""
     line_bot_api = get_line_bot_api()
@@ -196,8 +234,13 @@ def process_image_message(user_id: str, message_id: str):
         # Vision Agent: OCR the medicine name from the photo
         ingredient = extract_ingredient_from_image(image_base64, "image/jpeg")
 
+        # HITL Triage Gate: check against this user's own registered allergy profile
+        # (falls back to the shared demo MCP profile if they haven't registered one)
+        profile = get_profile(user_id)
+        user_allergies = profile.get("allergies") if profile else None
+
         # Data Fetcher Agents (OpenFDA / PubMed / ClinicalTrials) + Medical Translator Agent
-        report = analyze_ingredient(ingredient, lang="zh")
+        report = analyze_ingredient(ingredient, lang="zh", user_allergies=user_allergies)
 
         if report.get("status") == "requires_triage":
             allergies = "、".join(report.get("allergies", []))
@@ -208,6 +251,7 @@ def process_image_message(user_id: str, message_id: str):
                     "請務必先諮詢醫師或藥師，暫不提供自動分析。"
                 ),
             )
+            _notify_family_of_alert(line_bot_api, user_id, ingredient, allergies)
             return
 
         if "error" in report:
@@ -232,6 +276,30 @@ def process_text_message(user_id: str, reply_token: str, text: str):
 
     if stripped.lower() in HELP_TRIGGERS:
         line_bot_api.reply_message(reply_token, build_help_message())
+        return
+
+    if stripped in FAMILY_CODE_TRIGGERS:
+        code = create_family_link_code(user_id)
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(
+                text=f"👨‍👩‍👧 您的家屬通知代碼是：{code}\n"
+                "請家屬將本帳號加為好友後，在對話框輸入「綁定 " + code + "」\n"
+                "（代碼 10 分鐘內有效，之後偵測到過敏原衝突時會同步通知已綁定的家屬）"
+            ),
+        )
+        return
+
+    bind_match = FAMILY_BIND_PATTERN.search(stripped)
+    if bind_match:
+        code = bind_match.group(1)
+        patient_user_id = redeem_family_link_code(code, user_id)
+        if patient_user_id:
+            line_bot_api.reply_message(
+                reply_token, TextSendMessage(text="✅ 綁定成功！之後這位使用者的過敏原衝突警示會同步通知您。")
+            )
+        else:
+            line_bot_api.reply_message(reply_token, TextSendMessage(text="❌ 代碼無效或已過期，請對方重新產生一次。"))
         return
 
     if "取消" in stripped and ("提醒" in stripped or "remind" in stripped.lower()):
@@ -322,6 +390,37 @@ async def get_report(user_id: str):
     if not report:
         raise HTTPException(status_code=404, detail="No report found for this user yet.")
     return report
+
+
+class ProfileUpdate(BaseModel):
+    user_id: str
+    allergies: list[str] = []
+    medications: list[str] = []
+
+
+@router.get("/profile/{user_id}")
+async def get_profile_endpoint(user_id: str):
+    """Used by the LIFF profile page to pre-fill the form with what's already saved."""
+    profile = get_profile(user_id) or {"allergies": [], "medications": []}
+    return profile
+
+
+@router.post("/profile")
+async def update_profile(payload: ProfileUpdate):
+    """Used by the LIFF profile page to save a user's allergy/medication list."""
+    profile = save_profile(payload.user_id, payload.allergies, payload.medications)
+    return profile
+
+
+class FamilyCodeRequest(BaseModel):
+    user_id: str
+
+
+@router.post("/family/generate-code")
+async def generate_family_code(payload: FamilyCodeRequest):
+    """Used by the LIFF profile page's 'generate family code' button."""
+    code = create_family_link_code(payload.user_id)
+    return {"code": code, "expires_in_seconds": 600}
 
 
 @router.post("/send-reminders")
