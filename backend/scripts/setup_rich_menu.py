@@ -23,10 +23,11 @@ load_dotenv()
 
 WIDTH, HEIGHT = 2500, 843
 COLUMN_WIDTH = WIDTH // 3
+MARGIN = 22
 
 FONT_CANDIDATES = [
-    r"C:\Windows\Fonts\msjh.ttc",
     r"C:\Windows\Fonts\msjhbd.ttc",
+    r"C:\Windows\Fonts\msjh.ttc",
     "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
 ]
 
@@ -38,34 +39,99 @@ def _load_font(size: int) -> ImageFont.FreeTypeFont:
     return ImageFont.load_default()
 
 
+def _hex_to_rgb(hex_color: str) -> tuple:
+    hex_color = hex_color.lstrip("#")
+    return tuple(int(hex_color[i : i + 2], 16) for i in (0, 2, 4))
+
+
+def _vertical_gradient(size, top_color, bottom_color) -> Image.Image:
+    w, h = size
+    top = _hex_to_rgb(top_color)
+    bottom = _hex_to_rgb(bottom_color)
+    grad = Image.new("RGB", (1, h))
+    for y in range(h):
+        t = y / max(h - 1, 1)
+        row = tuple(int(top[c] + (bottom[c] - top[c]) * t) for c in range(3))
+        grad.putpixel((0, y), row)
+    return grad.resize((w, h))
+
+
+def _draw_cross_icon(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: str):
+    """Medical cross inside a white circle badge."""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FFFFFF")
+    bar = r * 0.24
+    draw.rounded_rectangle([cx - bar, cy - r * 0.62, cx + bar, cy + r * 0.62], radius=bar * 0.6, fill=color)
+    draw.rounded_rectangle([cx - r * 0.62, cy - bar, cx + r * 0.62, cy + bar], radius=bar * 0.6, fill=color)
+
+
+def _draw_bell_icon(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: str):
+    """Alarm bell inside a white circle badge."""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FFFFFF")
+    body_top = cy - r * 0.5
+    body_bottom = cy + r * 0.35
+    draw.pieslice([cx - r * 0.55, body_top - r * 0.15, cx + r * 0.55, body_top + r * 0.85], 180, 360, fill=color)
+    draw.rectangle([cx - r * 0.55, body_top + r * 0.35, cx + r * 0.55, body_bottom], fill=color)
+    draw.polygon(
+        [(cx - r * 0.6, body_bottom), (cx + r * 0.6, body_bottom), (cx, body_bottom + r * 0.28)], fill=color
+    )
+    draw.ellipse([cx - r * 0.12, cy - r * 0.85, cx + r * 0.12, cy - r * 0.62], fill=color)
+    draw.ellipse([cx - r * 0.15, body_bottom + r * 0.18, cx + r * 0.15, body_bottom + r * 0.48], fill=color)
+
+
+def _draw_info_icon(draw: ImageDraw.ImageDraw, cx: int, cy: int, r: int, color: str):
+    """Info 'i' inside a white circle badge."""
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill="#FFFFFF")
+    draw.ellipse([cx - r * 0.14, cy - r * 0.62, cx + r * 0.14, cy - r * 0.34], fill=color)
+    draw.rounded_rectangle([cx - r * 0.14, cy - r * 0.18, cx + r * 0.14, cy + r * 0.55], radius=r * 0.14, fill=color)
+
+
 def build_menu_image() -> bytes:
-    """Draws a simple 3-button green/white rich menu image in memory."""
-    img = Image.new("RGB", (WIDTH, HEIGHT), "#FFFFFF")
-    draw = ImageDraw.Draw(img)
-    title_font = _load_font(56)
-    sub_font = _load_font(34)
+    """Draws a 3-button rich menu with gradient cards, icon badges, and larger text."""
+    img = Image.new("RGB", (WIDTH, HEIGHT), "#F7F8FA")
 
     buttons = [
-        ("#06C755", "過敏資料登記", "填寫過敏原/家屬通知"),
-        ("#F5A623", "服藥提醒", "設定/取消提醒"),
-        ("#4A90D9", "使用說明", "查看完整功能選單"),
+        ("#22D07A", "#06A85A", _draw_cross_icon, "過敏資料登記", "填寫過敏原 / 家屬通知"),
+        ("#FFC24B", "#F08A1F", _draw_bell_icon, "服藥提醒", "設定或取消提醒時間"),
+        ("#5FA8F5", "#2E6FD9", _draw_info_icon, "使用說明", "查看完整功能選單"),
     ]
 
-    for i, (color, title, subtitle) in enumerate(buttons):
-        x0 = i * COLUMN_WIDTH
-        x1 = x0 + COLUMN_WIDTH
-        draw.rectangle([x0, 0, x1, HEIGHT], fill=color)
-        # Thin white separators between columns
-        if i > 0:
-            draw.rectangle([x0 - 4, 0, x0 + 4, HEIGHT], fill="#FFFFFF")
+    title_font = _load_font(76)
+    sub_font = _load_font(38)
+
+    for i, (top_color, bottom_color, icon_fn, title, subtitle) in enumerate(buttons):
+        x0 = i * COLUMN_WIDTH + MARGIN
+        x1 = (i + 1) * COLUMN_WIDTH - MARGIN
+        y0, y1 = MARGIN, HEIGHT - MARGIN
+
+        card = _vertical_gradient((x1 - x0, y1 - y0), top_color, bottom_color)
+        mask = Image.new("L", card.size, 0)
+        ImageDraw.Draw(mask).rounded_rectangle([0, 0, card.size[0], card.size[1]], radius=40, fill=255)
+        img.paste(card, (x0, y0), mask)
+
+        draw = ImageDraw.Draw(img)
+        badge_color = bottom_color
+        icon_cx = x0 + (x1 - x0) // 2
+        icon_cy = y0 + int((y1 - y0) * 0.32)
+        icon_r = 70
+        icon_fn(draw, icon_cx, icon_cy, icon_r, badge_color)
 
         title_bbox = draw.textbbox((0, 0), title, font=title_font)
         title_w = title_bbox[2] - title_bbox[0]
-        draw.text((x0 + (COLUMN_WIDTH - title_w) / 2, HEIGHT / 2 - 70), title, font=title_font, fill="#FFFFFF")
+        draw.text(
+            (x0 + (x1 - x0 - title_w) / 2, icon_cy + icon_r + 30),
+            title,
+            font=title_font,
+            fill="#FFFFFF",
+        )
 
         sub_bbox = draw.textbbox((0, 0), subtitle, font=sub_font)
         sub_w = sub_bbox[2] - sub_bbox[0]
-        draw.text((x0 + (COLUMN_WIDTH - sub_w) / 2, HEIGHT / 2 + 10), subtitle, font=sub_font, fill="#FFFFFF")
+        draw.text(
+            (x0 + (x1 - x0 - sub_w) / 2, icon_cy + icon_r + 30 + (title_bbox[3] - title_bbox[1]) + 22),
+            subtitle,
+            font=sub_font,
+            fill="#FFFFFF",
+        )
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
