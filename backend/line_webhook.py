@@ -25,7 +25,10 @@ from linebot.exceptions import InvalidSignatureError, LineBotApiError
 from linebot.models import (
     FlexSendMessage,
     ImageMessage,
+    MessageAction,
     MessageEvent,
+    QuickReply,
+    QuickReplyButton,
     TextMessage,
     TextSendMessage,
 )
@@ -35,7 +38,14 @@ from backend.agents.agent_system import (
     answer_followup_question,
     extract_ingredient_from_image,
 )
-from backend.line_store import add_reminder, get_latest_report, list_all_reminders, save_report
+from backend.line_store import (
+    add_reminder,
+    clear_reminders,
+    get_latest_report,
+    get_reminders,
+    list_all_reminders,
+    save_report,
+)
 
 router = APIRouter(prefix="/line", tags=["line"])
 
@@ -91,6 +101,32 @@ def _round_to_hour(time_str: str) -> str:
     return f"{hour:02d}:00"
 
 
+HELP_TRIGGERS = {"選單", "menu", "使用方法", "說明", "help", "提醒設定"}
+
+
+def reminder_quick_reply() -> QuickReply:
+    """Buttons for setting/canceling reminders without having to type anything."""
+    return QuickReply(
+        items=[
+            QuickReplyButton(action=MessageAction(label="🌅 早上提醒", text="提醒 早上")),
+            QuickReplyButton(action=MessageAction(label="☀️ 中午提醒", text="提醒 中午")),
+            QuickReplyButton(action=MessageAction(label="🌙 晚上提醒", text="提醒 晚上")),
+            QuickReplyButton(action=MessageAction(label="❌ 取消全部提醒", text="取消提醒")),
+        ]
+    )
+
+
+def build_help_message() -> TextSendMessage:
+    text = (
+        "📖 MediSafe 使用方法\n\n"
+        "1️⃣ 傳一張藥品照片或藥袋照片給我，我會幫您分析用藥安全並回傳報告\n"
+        "2️⃣ 收到報告後，可以直接打字追問（例如：可以跟感冒藥一起吃嗎？）\n"
+        "3️⃣ 點下方按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n\n"
+        "隨時輸入「選單」可以再叫出這個說明。"
+    )
+    return TextSendMessage(text=text, quick_reply=reminder_quick_reply())
+
+
 def build_traffic_light_flex(report: dict) -> FlexSendMessage:
     """Builds a Flex Message 'traffic light' card summarizing a safety report."""
     emoji, label = SAFETY_LABELS.get(report.get("safety_level", "warning"), ("🟡", "注意"))
@@ -142,7 +178,11 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
             ],
         },
     }
-    return FlexSendMessage(alt_text=f"{emoji} {ingredient} 用藥安全報告", contents=bubble)
+    return FlexSendMessage(
+        alt_text=f"{emoji} {ingredient} 用藥安全報告",
+        contents=bubble,
+        quick_reply=reminder_quick_reply(),
+    )
 
 
 def process_image_message(user_id: str, message_id: str):
@@ -188,9 +228,22 @@ def process_image_message(user_id: str, message_id: str):
 
 def process_text_message(user_id: str, reply_token: str, text: str):
     line_bot_api = get_line_bot_api()
+    stripped = text.strip()
 
-    keyword_match = REMINDER_KEYWORD_PATTERN.search(text)
-    reminder_match = REMINDER_PATTERN.search(text)
+    if stripped.lower() in HELP_TRIGGERS:
+        line_bot_api.reply_message(reply_token, build_help_message())
+        return
+
+    if "取消" in stripped and ("提醒" in stripped or "remind" in stripped.lower()):
+        clear_reminders(user_id)
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text="✅ 已取消您所有的服藥提醒。", quick_reply=reminder_quick_reply()),
+        )
+        return
+
+    keyword_match = REMINDER_KEYWORD_PATTERN.search(stripped)
+    reminder_match = REMINDER_PATTERN.search(stripped)
     if keyword_match or reminder_match:
         if keyword_match:
             raw_time = REMINDER_KEYWORD_TIMES[keyword_match.group(1).lower()]
@@ -198,9 +251,13 @@ def process_text_message(user_id: str, reply_token: str, text: str):
             raw_time = f"{int(reminder_match.group(1)):02d}:{reminder_match.group(2)}"
         time_str = _round_to_hour(raw_time)
         add_reminder(user_id, time_str)
+        registered = ", ".join(sorted(e["time"] for e in get_reminders(user_id)))
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text=f"✅ 已為您登記每日 {time_str} 的服藥提醒（會自動取整點）。"),
+            TextSendMessage(
+                text=f"✅ 已為您登記每日 {time_str} 的服藥提醒（會自動取整點）。\n目前已登記：{registered}",
+                quick_reply=reminder_quick_reply(),
+            ),
         )
         return
 
@@ -208,7 +265,10 @@ def process_text_message(user_id: str, reply_token: str, text: str):
     if not latest:
         line_bot_api.reply_message(
             reply_token,
-            TextSendMessage(text="請先傳一張藥品照片給我分析，之後就可以針對報告內容繼續追問囉！"),
+            TextSendMessage(
+                text="請先傳一張藥品照片給我分析，之後就可以針對報告內容繼續追問囉！輸入「選單」可以看使用說明。",
+                quick_reply=reminder_quick_reply(),
+            ),
         )
         return
 

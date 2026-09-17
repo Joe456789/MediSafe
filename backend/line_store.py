@@ -71,3 +71,25 @@ def list_all_reminders() -> dict:
     """Returns the full {user_id: [reminders]} map, for the reminder-push job."""
     with _lock:
         return _read_json(REMINDERS_PATH)
+
+
+def get_reminders(user_id: str) -> list:
+    """Returns the list of registered reminder times for one user."""
+    with _lock:
+        data = _read_json(REMINDERS_PATH)
+        return data.get(user_id, [])
+
+
+def clear_reminders(user_id: str, time_str: str | None = None) -> None:
+    """Cancels reminders for a user: a specific HH:MM slot, or all of them if time_str is None."""
+    with _lock:
+        data = _read_json(REMINDERS_PATH)
+        if user_id not in data:
+            return
+        if time_str is None:
+            del data[user_id]
+        else:
+            data[user_id] = [e for e in data[user_id] if e.get("time") != time_str]
+            if not data[user_id]:
+                del data[user_id]
+        _write_json(REMINDERS_PATH, data)
