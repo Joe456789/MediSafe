@@ -44,11 +44,13 @@ from backend.line_store import (
     add_reminder,
     clear_reminders,
     create_family_link_code,
+    get_dose_log,
     get_family_members,
     get_latest_report,
     get_profile,
     get_reminders,
     list_all_reminders,
+    log_dose_taken,
     redeem_family_link_code,
     save_profile,
     save_report,
@@ -113,6 +115,7 @@ def _round_to_hour(time_str: str) -> str:
 HELP_TRIGGERS = {"選單", "menu", "使用方法", "說明", "help", "提醒設定"}
 FAMILY_BIND_PATTERN = re.compile(r"(?:綁定|bind)\D*(\d{6})", re.IGNORECASE)
 FAMILY_CODE_TRIGGERS = {"家屬通知", "家屬綁定", "產生代碼", "通知代碼"}
+DOSE_LOG_TRIGGERS = {"已服藥", "打卡", "服藥打卡", "已吃藥"}
 
 
 def reminder_quick_reply() -> QuickReply:
@@ -138,7 +141,8 @@ def build_help_message() -> TextSendMessage:
         "2️⃣ 收到報告後，可以直接打字追問（例如：可以跟感冒藥一起吃嗎？）\n"
         "3️⃣ 點「過敏資料登記」填寫過敏原，之後分析會自動比對並示警\n"
         "4️⃣ 點按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n"
-        "5️⃣ 點「家屬通知代碼」產生代碼，請家屬在對話框輸入「綁定 該代碼」，之後過敏示警會同步通知家屬\n\n"
+        "5️⃣ 點「家屬通知代碼」產生代碼，請家屬在對話框輸入「綁定 該代碼」，之後過敏示警會同步通知家屬\n"
+        "6️⃣ 服藥後輸入「打卡」記錄，可以在「過敏資料登記」頁面看最近7天的打卡紀錄\n\n"
         "隨時輸入「選單」可以再叫出這個說明。"
     )
     return TextSendMessage(text=text, quick_reply=reminder_quick_reply())
@@ -278,6 +282,11 @@ def process_text_message(user_id: str, reply_token: str, text: str):
 
     if stripped.lower() in HELP_TRIGGERS:
         line_bot_api.reply_message(reply_token, build_help_message())
+        return
+
+    if stripped in DOSE_LOG_TRIGGERS:
+        log_dose_taken(user_id)
+        line_bot_api.reply_message(reply_token, TextSendMessage(text="✅ 已記錄今天的服藥打卡，做得很好！"))
         return
 
     if stripped in FAMILY_CODE_TRIGGERS:
@@ -425,6 +434,23 @@ async def generate_family_code(payload: FamilyCodeRequest):
     return {"code": code, "expires_in_seconds": 600}
 
 
+class DoseLogRequest(BaseModel):
+    user_id: str
+
+
+@router.post("/dose-log")
+async def check_in_dose(payload: DoseLogRequest):
+    """Used by the LIFF page's '今天已服藥' button. Idempotent per Asia/Taipei day."""
+    date = log_dose_taken(payload.user_id)
+    return {"date": date}
+
+
+@router.get("/dose-log/{user_id}")
+async def get_dose_log_endpoint(user_id: str, days: int = 7):
+    """Used by the LIFF page to render the last N days' check-in history."""
+    return {"days": get_dose_log(user_id, days)}
+
+
 @router.post("/send-reminders")
 async def send_reminders():
     """Meant to be triggered by Cloud Scheduler once an hour. Only pushes to users
@@ -442,7 +468,9 @@ async def send_reminders():
             try:
                 line_bot_api.push_message(
                     user_id,
-                    TextSendMessage(text=f"⏰ 該吃藥囉！這是您登記的 {entry['time']} 服藥提醒。"),
+                    TextSendMessage(
+                        text=f"⏰ 該吃藥囉！這是您登記的 {entry['time']} 服藥提醒。\n吃完可以回覆「打卡」記錄今天已服藥。"
+                    ),
                 )
                 sent += 1
             except LineBotApiError as e:

@@ -6,6 +6,7 @@ Keeps the MVP simple: no database, just JSON files under backend/data/.
 - profiles.json    : { user_id: {"allergies": [str], "medications": [str]} }
 - family_codes.json: { code: {"patient_user_id": str, "expires_at": float} }
 - family_links.json: { patient_user_id: [family_user_id, ...] }
+- dose_logs.json   : { user_id: [ "YYYY-MM-DD", ... ] }  (dates the user checked in)
 
 Not safe for high concurrency, but fine for a hackathon-scale demo.
 """
@@ -15,6 +16,8 @@ import random
 import string
 import threading
 import time
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "data")
 REPORTS_PATH = os.path.join(DATA_DIR, "reports.json")
@@ -22,6 +25,9 @@ REMINDERS_PATH = os.path.join(DATA_DIR, "reminders.json")
 PROFILES_PATH = os.path.join(DATA_DIR, "profiles.json")
 FAMILY_CODES_PATH = os.path.join(DATA_DIR, "family_codes.json")
 FAMILY_LINKS_PATH = os.path.join(DATA_DIR, "family_links.json")
+DOSE_LOGS_PATH = os.path.join(DATA_DIR, "dose_logs.json")
+
+TAIPEI_TZ = ZoneInfo("Asia/Taipei")
 
 FAMILY_CODE_TTL = 600  # seconds a generated linking code stays valid
 
@@ -163,3 +169,32 @@ def get_family_members(patient_user_id: str) -> list:
     with _lock:
         links = _read_json(FAMILY_LINKS_PATH)
         return links.get(patient_user_id, [])
+
+
+def log_dose_taken(user_id: str) -> str:
+    """Checks the user in as having taken their dose today (Asia/Taipei date).
+    Idempotent: checking in twice on the same day only records one entry."""
+    today = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+    with _lock:
+        data = _read_json(DOSE_LOGS_PATH)
+        dates = data.setdefault(user_id, [])
+        if today not in dates:
+            dates.append(today)
+        _write_json(DOSE_LOGS_PATH, data)
+        return today
+
+
+def get_dose_log(user_id: str, days: int = 7) -> list:
+    """Returns the last `days` days (oldest first) as {"date": "YYYY-MM-DD", "taken": bool}."""
+    with _lock:
+        data = _read_json(DOSE_LOGS_PATH)
+        taken_dates = set(data.get(user_id, []))
+
+    today = datetime.now(TAIPEI_TZ).date()
+    return [
+        {
+            "date": (today - timedelta(days=offset)).strftime("%Y-%m-%d"),
+            "taken": (today - timedelta(days=offset)).strftime("%Y-%m-%d") in taken_dates,
+        }
+        for offset in range(days - 1, -1, -1)
+    ]
