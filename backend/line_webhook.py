@@ -94,6 +94,7 @@ REMINDER_KEYWORD_TIMES = {
     "早上": "08:00", "早": "08:00", "morning": "08:00",
     "中午": "12:00", "noon": "12:00",
     "晚上": "18:00", "晚": "18:00", "evening": "18:00", "night": "18:00",
+    "睡前": "22:00", "bedtime": "22:00",
 }
 REMINDER_KEYWORD_PATTERN = re.compile(
     r"(?:提醒|remind)\D*(" + "|".join(REMINDER_KEYWORD_TIMES.keys()) + r")", re.IGNORECASE
@@ -122,6 +123,7 @@ def reminder_quick_reply() -> QuickReply:
             QuickReplyButton(action=MessageAction(label="🌅 早上提醒", text="提醒 早上")),
             QuickReplyButton(action=MessageAction(label="☀️ 中午提醒", text="提醒 中午")),
             QuickReplyButton(action=MessageAction(label="🌙 晚上提醒", text="提醒 晚上")),
+            QuickReplyButton(action=MessageAction(label="😴 睡前提醒", text="提醒 睡前")),
             QuickReplyButton(action=MessageAction(label="❌ 取消全部提醒", text="取消提醒")),
             QuickReplyButton(action=URIAction(label="📋 過敏資料登記", uri=LIFF_PROFILE_URL)),
             QuickReplyButton(action=MessageAction(label="👨‍👩‍👧 家屬通知代碼", text="家屬通知")),
