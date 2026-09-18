@@ -13,8 +13,11 @@ load_dotenv()
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from backend.agents.agent_system import analyze_ingredient, extract_ingredient_from_image, answer_followup_question
+from backend.line_webhook import router as line_router
 
 app = FastAPI(title="MediSafe API", description="AI Agent for Medicine Safety Translation")
+
+app.include_router(line_router)
 
 # Allow CORS for local frontend development
 app.add_middleware(

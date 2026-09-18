@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>MediSafe 過敏資料登記</title>
+<script charset="utf-8" src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+<style>
+  :root {
+    --line-green: #06C755;
+    --line-green-dark: #05a648;
+    --bg: #f7f8fa;
+    --card-radius: 16px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", "PingFang TC", "Microsoft JhengHei", sans-serif;
+    background: var(--bg);
+    color: #222;
+  }
+  .container { max-width: 480px; margin: 0 auto; padding: 16px; }
+  .state-box { text-align: center; padding: 60px 16px; color: #888; }
+
+  .card {
+    background: #fff;
+    border-radius: var(--card-radius);
+    padding: 18px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.06);
+  }
+  .card h2 {
+    font-size: 15px;
+    color: var(--line-green-dark);
+    margin: 0 0 4px 0;
+  }
+  .card p.hint {
+    font-size: 12px;
+    color: #999;
+    margin: 0 0 12px 0;
+  }
+
+  label {
+    display: block;
+    font-size: 13px;
+    font-weight: bold;
+    margin-bottom: 6px;
+  }
+  input[type="text"] {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #ddd;
+    border-radius: 10px;
+    font-size: 14px;
+    margin-bottom: 14px;
+  }
+  input[type="text"]:focus { outline: none; border-color: var(--line-green); }
+
+  button {
+    width: 100%;
+    padding: 12px;
+    border: none;
+    border-radius: 10px;
+    font-size: 15px;
+    font-weight: bold;
+    cursor: pointer;
+  }
+  .btn-primary { background: var(--line-green); color: #fff; }
+  .btn-primary:active { background: var(--line-green-dark); }
+  .btn-secondary { background: #f2f4f6; color: #333; }
+
+  .status-msg {
+    text-align: center;
+    font-size: 13px;
+    margin-top: 10px;
+    min-height: 18px;
+  }
+  .status-msg.success { color: var(--line-green-dark); }
+  .status-msg.error { color: #c62f28; }
+
+  .code-box {
+    text-align: center;
+    background: #f2f4f6;
+    border-radius: 10px;
+    padding: 16px;
+    margin-top: 12px;
+    font-size: 28px;
+    font-weight: bold;
+    letter-spacing: 4px;
+    color: var(--line-green-dark);
+    display: none;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <div id="loading" class="state-box">正在載入您的資料...</div>
+  <div id="error" class="state-box" style="display:none;"></div>
+
+  <div id="content" style="display:none;">
+    <div class="card">
+      <h2>💊 過敏原登記</h2>
+      <p class="hint">多筆請用逗號分隔，例如：Ibuprofen, Penicillin</p>
+      <label for="allergies">已知過敏藥物/成分</label>
+      <input type="text" id="allergies" placeholder="例如：Ibuprofen, Penicillin" />
+
+      <label for="medications">目前服用中的藥物（選填）</label>
+      <input type="text" id="medications" placeholder="例如：Metformin, Aspirin" />
+
+      <button class="btn-primary" id="save-btn">儲存</button>
+      <div class="status-msg" id="save-status"></div>
+    </div>
+
+    <div class="card">
+      <h2>👨‍👩‍👧 家屬通知</h2>
+      <p class="hint">產生代碼後，請家屬加本帳號好友並在對話框輸入「綁定 代碼」，之後偵測到過敏原衝突會同步通知家屬。</p>
+      <button class="btn-secondary" id="code-btn">產生家屬通知代碼</button>
+      <div class="code-box" id="code-box"></div>
+      <div class="status-msg" id="code-status"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+// TODO: 填入你在 LINE Developers Console 建立的 LIFF ID（過敏資料登記用的那個 LIFF app）
+const LIFF_ID = "2011648052-fh99Jma2";
+const API_BASE = "";
+
+let currentUserId = null;
+
+function showError(message) {
+  document.getElementById("loading").style.display = "none";
+  const errorBox = document.getElementById("error");
+  errorBox.style.display = "block";
+  errorBox.textContent = message;
+}
+
+function parseList(value) {
+  return value
+    .split(",")
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+}
+
+async function loadProfile(userId) {
+  const res = await fetch(`${API_BASE}/line/profile/${encodeURIComponent(userId)}`);
+  if (!res.ok) throw new Error(`讀取資料失敗（HTTP ${res.status}）`);
+  return res.json();
+}
+
+async function saveProfile(userId, allergies, medications) {
+  const res = await fetch(`${API_BASE}/line/profile`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId, allergies, medications }),
+  });
+  if (!res.ok) throw new Error(`儲存失敗（HTTP ${res.status}）`);
+  return res.json();
+}
+
+async function generateFamilyCode(userId) {
+  const res = await fetch(`${API_BASE}/line/family/generate-code`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user_id: userId }),
+  });
+  if (!res.ok) throw new Error(`產生代碼失敗（HTTP ${res.status}）`);
+  return res.json();
+}
+
+function setStatus(elId, message, isError) {
+  const el = document.getElementById(elId);
+  el.textContent = message;
+  el.className = "status-msg " + (isError ? "error" : "success");
+}
+
+async function main() {
+  try {
+    await liff.init({ liffId: LIFF_ID });
+    if (!liff.isLoggedIn()) {
+      liff.login();
+      return;
+    }
+    const profile = await liff.getProfile();
+    currentUserId = profile.userId;
+
+    const saved = await loadProfile(currentUserId);
+    document.getElementById("allergies").value = (saved.allergies || []).join(", ");
+    document.getElementById("medications").value = (saved.medications || []).join(", ");
+
+    document.getElementById("loading").style.display = "none";
+    document.getElementById("content").style.display = "block";
+
+    document.getElementById("save-btn").addEventListener("click", async () => {
+      try {
+        const allergies = parseList(document.getElementById("allergies").value);
+        const medications = parseList(document.getElementById("medications").value);
+        await saveProfile(currentUserId, allergies, medications);
+        setStatus("save-status", "✅ 已儲存，之後分析藥品會自動比對這份過敏清單。", false);
+      } catch (err) {
+        setStatus("save-status", err.message || "儲存時發生錯誤", true);
+      }
+    });
+
+    document.getElementById("code-btn").addEventListener("click", async () => {
+      try {
+        const result = await generateFamilyCode(currentUserId);
+        const codeBox = document.getElementById("code-box");
+        codeBox.textContent = result.code;
+        codeBox.style.display = "block";
+        setStatus("code-status", "請家屬在 10 分鐘內於對話框輸入「綁定 " + result.code + "」", false);
+      } catch (err) {
+        setStatus("code-status", err.message || "產生代碼時發生錯誤", true);
+      }
+    });
+  } catch (err) {
+    console.error(err);
+    showError(err.message || "載入時發生錯誤，請稍後再試。");
+  }
+}
+
+main();
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*.local
+.git
+.github
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+submission_materials/
+*.mp4
+backend/data/
+.agents/
+.semgrep/
