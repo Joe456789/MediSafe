@@ -44,7 +44,7 @@ from backend.line_store import (
     add_reminder,
     clear_reminders,
     create_family_link_code,
-    get_dose_log,
+    get_dose_history,
     get_family_members,
     get_latest_report,
     get_profile,
@@ -115,7 +115,8 @@ def _round_to_hour(time_str: str) -> str:
 HELP_TRIGGERS = {"選單", "menu", "使用方法", "說明", "help", "提醒設定"}
 FAMILY_BIND_PATTERN = re.compile(r"(?:綁定|bind)\D*(\d{6})", re.IGNORECASE)
 FAMILY_CODE_TRIGGERS = {"家屬通知", "家屬綁定", "產生代碼", "通知代碼"}
-DOSE_LOG_TRIGGERS = {"已服藥", "打卡", "服藥打卡", "已吃藥"}
+DOSE_LOG_PATTERN = re.compile(r"^(?:打卡|已服藥|服藥打卡|已吃藥)\s*(\d{2}:00)?$")
+DOSE_HISTORY_TRIGGERS = {"打卡紀錄", "服藥紀錄", "漏吃", "漏吃紀錄", "查詢紀錄"}
 
 
 def reminder_quick_reply() -> QuickReply:
@@ -127,11 +128,29 @@ def reminder_quick_reply() -> QuickReply:
             QuickReplyButton(action=MessageAction(label="☀️ 中午提醒", text="提醒 中午")),
             QuickReplyButton(action=MessageAction(label="🌙 晚上提醒", text="提醒 晚上")),
             QuickReplyButton(action=MessageAction(label="😴 睡前提醒", text="提醒 睡前")),
+            QuickReplyButton(action=MessageAction(label="✅ 已服藥打卡", text="打卡")),
+            QuickReplyButton(action=MessageAction(label="📋 服藥紀錄", text="服藥紀錄")),
             QuickReplyButton(action=MessageAction(label="❌ 取消全部提醒", text="取消提醒")),
             QuickReplyButton(action=URIAction(label="📋 過敏資料登記", uri=LIFF_PROFILE_URL)),
             QuickReplyButton(action=MessageAction(label="👨‍👩‍👧 家屬通知代碼", text="家屬通知")),
         ]
     )
+
+
+def build_dose_history_text(user_id: str, days: int = 7) -> str:
+    history = get_dose_history(user_id, days)
+    if not any(d["expected"] for d in history):
+        return "您還沒有設定服藥提醒，設定後才能記錄每次是否有吃藥。請先點「早上／中午／晚上／睡前提醒」。"
+    lines = [f"📋 最近 {days} 天服藥紀錄"]
+    missed_total = 0
+    for d in history:
+        month_day = d["date"][5:].replace("-", "/")
+        parts = [f"✅{s}" for s in d["taken"]] + [f"❌{s}" for s in d["missed"]] + [f"⏳{s}" for s in d["upcoming"]]
+        missed_total += len(d["missed"])
+        lines.append(f"{month_day}  " + ("　".join(parts) if parts else "—"))
+    lines.append(f"\n漏吃共 {missed_total} 次" + ("，要記得按時吃藥喔！" if missed_total else "，全部都有吃，太棒了！"))
+    lines.append("（✅已吃　❌漏吃　⏳時間未到）")
+    return "\n".join(lines)
 
 
 def build_help_message() -> TextSendMessage:
@@ -142,7 +161,7 @@ def build_help_message() -> TextSendMessage:
         "3️⃣ 點「過敏資料登記」填寫過敏原，之後分析會自動比對並示警\n"
         "4️⃣ 點按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n"
         "5️⃣ 點「家屬通知代碼」產生代碼，請家屬在對話框輸入「綁定 該代碼」，之後過敏示警會同步通知家屬\n"
-        "6️⃣ 服藥後輸入「打卡」記錄，可以在「過敏資料登記」頁面看最近7天的打卡紀錄\n\n"
+        "6️⃣ 吃完藥點「已服藥打卡」按鈕（或收到提醒時點「我吃了」），點「服藥紀錄」可查哪一次沒吃\n\n"
         "隨時輸入「選單」可以再叫出這個說明。"
     )
     return TextSendMessage(text=text, quick_reply=reminder_quick_reply())
@@ -152,6 +171,8 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
     """Builds a Flex Message 'traffic light' card summarizing a safety report."""
     emoji, label = SAFETY_LABELS.get(report.get("safety_level", "warning"), ("🟡", "注意"))
     ingredient = report.get("ingredient", "未知藥品")
+    ingredient_zh = report.get("ingredient_zh") or ingredient
+    display_name = ingredient_zh if ingredient_zh == ingredient else f"{ingredient_zh}（{ingredient}）"
 
     bubble = {
         "type": "bubble",
@@ -168,7 +189,7 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
                 },
                 {
                     "type": "text",
-                    "text": ingredient,
+                    "text": display_name,
                     "weight": "bold",
                     "size": "lg",
                     "wrap": True,
@@ -200,7 +221,7 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
         },
     }
     return FlexSendMessage(
-        alt_text=f"{emoji} {ingredient} 用藥安全報告",
+        alt_text=f"{emoji} {display_name} 用藥安全報告",
         contents=bubble,
         quick_reply=reminder_quick_reply(),
     )
@@ -284,9 +305,19 @@ def process_text_message(user_id: str, reply_token: str, text: str):
         line_bot_api.reply_message(reply_token, build_help_message())
         return
 
-    if stripped in DOSE_LOG_TRIGGERS:
-        log_dose_taken(user_id)
-        line_bot_api.reply_message(reply_token, TextSendMessage(text="✅ 已記錄今天的服藥打卡，做得很好！"))
+    dose_match = DOSE_LOG_PATTERN.match(stripped)
+    if dose_match:
+        _, slot = log_dose_taken(user_id, dose_match.group(1))
+        line_bot_api.reply_message(
+            reply_token,
+            TextSendMessage(text=f"✅ 已記錄今天 {slot} 的服藥打卡，做得很好！", quick_reply=reminder_quick_reply()),
+        )
+        return
+
+    if stripped in DOSE_HISTORY_TRIGGERS:
+        line_bot_api.reply_message(
+            reply_token, TextSendMessage(text=build_dose_history_text(user_id), quick_reply=reminder_quick_reply())
+        )
         return
 
     if stripped in FAMILY_CODE_TRIGGERS:
@@ -436,19 +467,20 @@ async def generate_family_code(payload: FamilyCodeRequest):
 
 class DoseLogRequest(BaseModel):
     user_id: str
+    slot: str | None = None
 
 
 @router.post("/dose-log")
 async def check_in_dose(payload: DoseLogRequest):
     """Used by the LIFF page's '今天已服藥' button. Idempotent per Asia/Taipei day."""
-    date = log_dose_taken(payload.user_id)
-    return {"date": date}
+    date, slot = log_dose_taken(payload.user_id, payload.slot)
+    return {"date": date, "slot": slot}
 
 
 @router.get("/dose-log/{user_id}")
 async def get_dose_log_endpoint(user_id: str, days: int = 7):
     """Used by the LIFF page to render the last N days' check-in history."""
-    return {"days": get_dose_log(user_id, days)}
+    return {"days": get_dose_history(user_id, min(max(days, 1), 30))}
 
 
 @router.post("/send-reminders")
@@ -469,7 +501,15 @@ async def send_reminders():
                 line_bot_api.push_message(
                     user_id,
                     TextSendMessage(
-                        text=f"⏰ 該吃藥囉！這是您登記的 {entry['time']} 服藥提醒。\n吃完可以回覆「打卡」記錄今天已服藥。"
+                        text=f"⏰ 該吃藥囉！這是您登記的 {entry['time']} 服藥提醒。吃完請點下方按鈕打卡。",
+                        quick_reply=QuickReply(
+                            items=[
+                                QuickReplyButton(
+                                    action=MessageAction(label="✅ 我吃了", text=f"打卡 {entry['time']}")
+                                ),
+                                QuickReplyButton(action=MessageAction(label="📋 服藥紀錄", text="服藥紀錄")),
+                            ]
+                        ),
                     ),
                 )
                 sent += 1

@@ -6,7 +6,7 @@ Keeps the MVP simple: no database, just JSON files under backend/data/.
 - profiles.json    : { user_id: {"allergies": [str], "medications": [str]} }
 - family_codes.json: { code: {"patient_user_id": str, "expires_at": float} }
 - family_links.json: { patient_user_id: [family_user_id, ...] }
-- dose_logs.json   : { user_id: [ "YYYY-MM-DD", ... ] }  (dates the user checked in)
+- dose_logs.json   : { user_id: { "YYYY-MM-DD": ["HH:00", ...] } }  (reminder slots checked in per day)
 
 Not safe for high concurrency, but fine for a hackathon-scale demo.
 """
@@ -76,9 +76,11 @@ def add_reminder(user_id: str, time_str: str, note: str = "") -> dict:
     with _lock:
         data = _read_json(REMINDERS_PATH)
         user_reminders = data.setdefault(user_id, [])
-        entry = {"time": time_str, "note": note}
-        if entry not in user_reminders:
-            user_reminders.append(entry)
+        existing = next((e for e in user_reminders if e.get("time") == time_str), None)
+        if existing:
+            return existing
+        entry = {"time": time_str, "note": note, "since": datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")}
+        user_reminders.append(entry)
         _write_json(REMINDERS_PATH, data)
         return entry
 
@@ -171,30 +173,57 @@ def get_family_members(patient_user_id: str) -> list:
         return links.get(patient_user_id, [])
 
 
-def log_dose_taken(user_id: str) -> str:
-    """Checks the user in as having taken their dose today (Asia/Taipei date).
-    Idempotent: checking in twice on the same day only records one entry."""
-    today = datetime.now(TAIPEI_TZ).strftime("%Y-%m-%d")
+def log_dose_taken(user_id: str, slot: str | None = None) -> tuple:
+    """Checks the user in for a reminder slot today (Asia/Taipei). If no slot is
+    given, uses the latest registered reminder slot that is already due, or
+    "手動" when the user has no matching reminder. Idempotent per day+slot."""
+    now = datetime.now(TAIPEI_TZ)
+    today = now.strftime("%Y-%m-%d")
+    if slot is None:
+        due = sorted(e["time"] for e in get_reminders(user_id) if e["time"] <= now.strftime("%H:59"))
+        slot = due[-1] if due else "手動"
     with _lock:
         data = _read_json(DOSE_LOGS_PATH)
-        dates = data.setdefault(user_id, [])
-        if today not in dates:
-            dates.append(today)
+        user_days = data.get(user_id)
+        if not isinstance(user_days, dict):
+            user_days = {}
+        slots = user_days.setdefault(today, [])
+        if slot not in slots:
+            slots.append(slot)
+        data[user_id] = user_days
         _write_json(DOSE_LOGS_PATH, data)
-        return today
+    return today, slot
 
 
-def get_dose_log(user_id: str, days: int = 7) -> list:
-    """Returns the last `days` days (oldest first) as {"date": "YYYY-MM-DD", "taken": bool}."""
+def get_dose_history(user_id: str, days: int = 7) -> list:
+    """Returns the last `days` days (oldest first). Each entry lists the slots the
+    user should have taken (their reminders), which they checked in, and which
+    are already past due but missed. Today's not-yet-due slots are 'upcoming'."""
     with _lock:
         data = _read_json(DOSE_LOGS_PATH)
-        taken_dates = set(data.get(user_id, []))
+    user_days = data.get(user_id)
+    if not isinstance(user_days, dict):
+        user_days = {}
+    reminders = get_reminders(user_id)
+    expected = sorted(e["time"] for e in reminders)
+    since = {e["time"]: e.get("since") for e in reminders}
 
-    today = datetime.now(TAIPEI_TZ).date()
-    return [
-        {
-            "date": (today - timedelta(days=offset)).strftime("%Y-%m-%d"),
-            "taken": (today - timedelta(days=offset)).strftime("%Y-%m-%d") in taken_dates,
-        }
-        for offset in range(days - 1, -1, -1)
-    ]
+    now = datetime.now(TAIPEI_TZ)
+    today = now.date()
+    result = []
+    for offset in range(days - 1, -1, -1):
+        day = today - timedelta(days=offset)
+        key = day.strftime("%Y-%m-%d")
+        taken = user_days.get(key, [])
+        missed, upcoming = [], []
+        for slot in expected:
+            if slot in taken:
+                continue
+            if since.get(slot) and key <= since[slot]:
+                continue
+            if day == today and slot > now.strftime("%H:59"):
+                upcoming.append(slot)
+            else:
+                missed.append(slot)
+        result.append({"date": key, "expected": expected, "taken": taken, "missed": missed, "upcoming": upcoming})
+    return result

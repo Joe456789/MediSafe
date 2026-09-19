@@ -149,7 +149,9 @@ function renderReport(report) {
   banner.classList.add(meta.cls);
   document.getElementById("banner-emoji").textContent = meta.emoji;
   document.getElementById("banner-label").textContent = meta.label;
-  document.getElementById("banner-ingredient").textContent = report.ingredient || "";
+  const zh = report.ingredient_zh || report.ingredient || "";
+  document.getElementById("banner-ingredient").textContent =
+    zh && report.ingredient && zh !== report.ingredient ? `${zh}（${report.ingredient}）` : zh;
 
   const foodGrid = document.getElementById("food-grid");
   const foodWarnings = report.food_warnings || {};
@@ -162,7 +164,7 @@ function renderReport(report) {
     item.innerHTML = `
       <span class="icon">${info.icon}</span>
       <span>${info.name}</span>
-      <span class="pill ${verdict}">${verdict === "avoid" ? "避免" : "OK"}</span>
+      <span class="pill ${verdict}">${verdict === "avoid" ? "避免" : "可以"}</span>
     `;
     foodGrid.appendChild(item);
   });

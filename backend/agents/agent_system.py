@@ -191,7 +191,8 @@ You MUST output a valid JSON object with the following keys:
 2. "pill_type": "tablet", "capsule", or "liquid" (typical form of this medicine).
 3. "pill_color": "white", "red", "orange", "blue", "yellow", or "brown" (typical color).
 4. "food_warnings": { "alcohol": "avoid" or "safe", "dairy": "avoid" or "safe", "grapefruit": "avoid" or "safe", "caffeine": "avoid" or "safe" } (typical food conflicts).
-5. "report": "A warm, extremely simple safety summary for the general public in markdown. Use bullet points. The report MUST contain exactly three clear sections in markdown:
+5. "ingredient_zh": 藥品成分最常見的繁體中文名稱（例如 Acetaminophen 寫「乙醯胺酚（普拿疼）」）；若 lang 為 en 或沒有通用中文譯名，請填入原英文名稱。
+6. "report": "A warm, extremely simple safety summary for the general public in markdown. Use bullet points. The report MUST contain exactly three clear sections in markdown:
    - 💊 用藥小叮嚀 (How to Take / Important Guidelines): Practical details such as whether to take with food, what to do if a dose is missed.
    - ⚠️ 密切注意的副作用 (Side Effects to Watch): Simple list of common side effects (e.g. stomach upset) and severe allergy alerts (e.g. rashes).
    - 🔍 歷史品質與安全紀錄 (Quality & Safety Record): Reassuring summary of quality history. Avoid long lists of scary historic recall details; keep it simple and focus on current safety."
@@ -254,6 +255,7 @@ DO NOT include markdown code block formatting (such as ```json) in your output, 
     final_result = {
         "status": "normal",
         "ingredient": ingredient,
+        "ingredient_zh": report_data.get("ingredient_zh") or ingredient,
         "safety_level": report_data.get("safety_level", "warning"),
         "pill_type": report_data.get("pill_type", "tablet"),
         "pill_color": report_data.get("pill_color", "white"),
