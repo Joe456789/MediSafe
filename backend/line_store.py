@@ -56,11 +56,18 @@ def _write_json(path: str, data: dict):
     os.replace(tmp_path, path)
 
 
-def save_report(user_id: str, report: dict):
-    """Stores the most recent analysis report for a LINE user."""
+_SEVERITY = {"danger": 2, "warning": 1, "safe": 0}
+
+
+def save_report_batch(user_id: str, reports: list, interactions: str = "") -> None:
+    """Stores the latest analysis for a LINE user. The most severe report is kept at
+    the top level (so single-report readers keep working) and every report from the
+    same photo goes into "batch"."""
+    slim = [{k: v for k, v in r.items() if k != "raw_data"} for r in reports]
+    primary = max(slim, key=lambda r: _SEVERITY.get(r.get("safety_level"), 1))
     with _lock:
         data = _read_json(REPORTS_PATH)
-        data[user_id] = {**report, "saved_at": time.time()}
+        data[user_id] = {**primary, "batch": slim, "interactions": interactions, "saved_at": time.time()}
         _write_json(REPORTS_PATH, data)
 
 

@@ -16,6 +16,7 @@ Official Account:
 import base64
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -38,7 +39,8 @@ from pydantic import BaseModel
 from backend.agents.agent_system import (
     analyze_ingredient,
     answer_followup_question,
-    extract_ingredient_from_image,
+    extract_ingredients_from_image,
+    summarize_drug_interactions,
 )
 from backend.line_store import (
     add_reminder,
@@ -53,7 +55,7 @@ from backend.line_store import (
     log_dose_taken,
     redeem_family_link_code,
     save_profile,
-    save_report,
+    save_report_batch,
 )
 
 router = APIRouter(prefix="/line", tags=["line"])
@@ -156,7 +158,7 @@ def build_dose_history_text(user_id: str, days: int = 7) -> str:
 def build_help_message() -> TextSendMessage:
     text = (
         "📖 MediSafe 使用方法\n\n"
-        "1️⃣ 傳一張藥品照片或藥袋照片給我，我會幫您分析用藥安全並回傳報告\n"
+        "1️⃣ 傳一張藥品照片或藥袋照片給我，我會幫您分析用藥安全並回傳報告（藥單上有多種藥也會一起分析）\n"
         "2️⃣ 收到報告後，可以直接打字追問（例如：可以跟感冒藥一起吃嗎？）\n"
         "3️⃣ 點「過敏資料登記」填寫過敏原，之後分析會自動比對並示警\n"
         "4️⃣ 點按鈕設定每日服藥提醒，或打「取消提醒」全部取消\n"
@@ -167,33 +169,26 @@ def build_help_message() -> TextSendMessage:
     return TextSendMessage(text=text, quick_reply=reminder_quick_reply())
 
 
-def build_traffic_light_flex(report: dict) -> FlexSendMessage:
-    """Builds a Flex Message 'traffic light' card summarizing a safety report."""
-    emoji, label = SAFETY_LABELS.get(report.get("safety_level", "warning"), ("🟡", "注意"))
+def _display_name(report: dict) -> str:
     ingredient = report.get("ingredient", "未知藥品")
     ingredient_zh = report.get("ingredient_zh") or ingredient
-    display_name = ingredient_zh if ingredient_zh == ingredient else f"{ingredient_zh}（{ingredient}）"
+    if ingredient_zh == ingredient or ingredient.lower() in ingredient_zh.lower():
+        return ingredient_zh
+    return f"{ingredient_zh}（{ingredient}）"
 
-    bubble = {
+
+def _report_bubble(report: dict) -> dict:
+    """One 'traffic light' bubble for a single medicine's safety report."""
+    emoji, label = SAFETY_LABELS.get(report.get("safety_level", "warning"), ("🟡", "注意"))
+    return {
         "type": "bubble",
         "body": {
             "type": "box",
             "layout": "vertical",
             "spacing": "md",
             "contents": [
-                {
-                    "type": "text",
-                    "text": f"{emoji} {label}",
-                    "weight": "bold",
-                    "size": "xl",
-                },
-                {
-                    "type": "text",
-                    "text": display_name,
-                    "weight": "bold",
-                    "size": "lg",
-                    "wrap": True,
-                },
+                {"type": "text", "text": f"{emoji} {label}", "weight": "bold", "size": "xl"},
+                {"type": "text", "text": _display_name(report), "weight": "bold", "size": "lg", "wrap": True},
                 {
                     "type": "text",
                     "text": "已完成用藥安全分析，點擊下方按鈕查看完整白話報告。",
@@ -211,20 +206,46 @@ def build_traffic_light_flex(report: dict) -> FlexSendMessage:
                     "type": "button",
                     "style": "primary",
                     "color": "#06C755",
-                    "action": {
-                        "type": "uri",
-                        "label": "查看完整報告",
-                        "uri": LIFF_REPORT_URL,
-                    },
+                    "action": {"type": "uri", "label": "查看完整報告", "uri": LIFF_REPORT_URL},
                 }
             ],
         },
     }
-    return FlexSendMessage(
-        alt_text=f"{emoji} {display_name} 用藥安全報告",
-        contents=bubble,
-        quick_reply=reminder_quick_reply(),
-    )
+
+
+def _triage_bubble(ingredient: str, allergies: str) -> dict:
+    """Red bubble for a medicine that was blocked by the allergy triage gate."""
+    return {
+        "type": "bubble",
+        "body": {
+            "type": "box",
+            "layout": "vertical",
+            "spacing": "md",
+            "contents": [
+                {"type": "text", "text": "🔴 過敏警示", "weight": "bold", "size": "xl", "color": "#C62F28"},
+                {"type": "text", "text": ingredient, "weight": "bold", "size": "lg", "wrap": True},
+                {
+                    "type": "text",
+                    "text": f"與您登記的過敏原（{allergies}）相關，已攔下自動分析，請先諮詢醫師或藥師。",
+                    "size": "sm",
+                    "color": "#666666",
+                    "wrap": True,
+                },
+            ],
+        },
+    }
+
+
+def build_result_flex(bubbles: list, alt_text: str) -> FlexSendMessage:
+    """A single bubble for one medicine, or a carousel (LINE allows up to 12) for several."""
+    contents = bubbles[0] if len(bubbles) == 1 else {"type": "carousel", "contents": bubbles[:12]}
+    return FlexSendMessage(alt_text=alt_text[:390], contents=contents, quick_reply=reminder_quick_reply())
+
+
+def build_traffic_light_flex(report: dict) -> FlexSendMessage:
+    """Flex Message 'traffic light' card for a single safety report."""
+    emoji, _ = SAFETY_LABELS.get(report.get("safety_level", "warning"), ("🟡", "注意"))
+    return build_result_flex([_report_bubble(report)], f"{emoji} {_display_name(report)} 用藥安全報告")
 
 
 def _notify_family_of_alert(line_bot_api: LineBotApi, patient_user_id: str, ingredient: str, allergies: str):
@@ -250,43 +271,72 @@ def _notify_family_of_alert(line_bot_api: LineBotApi, patient_user_id: str, ingr
             print(f"[LINE Warning] Failed to notify family member {family_id}: {e}")
 
 
+def _analyze_one(ingredient: str, user_allergies) -> dict:
+    try:
+        return analyze_ingredient(ingredient, lang="zh", user_allergies=user_allergies)
+    except Exception as e:
+        print(f"[MediSafe Warning] Analysis failed for {ingredient}: {e}")
+        return {"error": str(e)}
+
+
 def process_image_message(user_id: str, message_id: str):
-    """Runs the full Vision -> Data Fetcher -> Translator pipeline and pushes the result."""
+    """Vision -> Data Fetcher -> Translator pipeline for every medicine in the photo
+    (a prescription can list several), pushed back as one Flex message."""
     line_bot_api = get_line_bot_api()
     try:
         content = line_bot_api.get_message_content(message_id)
         image_bytes = b"".join(chunk for chunk in content.iter_content())
         image_base64 = base64.b64encode(image_bytes).decode("utf-8")
 
-        # Vision Agent: OCR the medicine name from the photo
-        ingredient = extract_ingredient_from_image(image_base64, "image/jpeg")
+        # Vision Agent: every medicine name visible in the photo
+        ingredients = extract_ingredients_from_image(image_base64, "image/jpeg")
 
         # HITL Triage Gate: check against this user's own registered allergy profile
         # (falls back to the shared demo MCP profile if they haven't registered one)
         profile = get_profile(user_id)
         user_allergies = profile.get("allergies") if profile else None
 
-        # Data Fetcher Agents (OpenFDA / PubMed / ClinicalTrials) + Medical Translator Agent
-        report = analyze_ingredient(ingredient, lang="zh", user_allergies=user_allergies)
+        # Data Fetcher Agents + Medical Translator Agent, one medicine per worker; the
+        # cross-medicine interaction note is generated in parallel.
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            interaction_future = pool.submit(summarize_drug_interactions, ingredients) if len(ingredients) > 1 else None
+            results = list(pool.map(lambda name: _analyze_one(name, user_allergies), ingredients))
+        interactions = interaction_future.result() if interaction_future else ""
 
-        if report.get("status") == "requires_triage":
-            allergies = "、".join(report.get("allergies", []))
+        reports, conflicts, failed = [], [], []
+        for name, result in zip(ingredients, results):
+            if result.get("status") == "requires_triage":
+                conflicts.append((name, "、".join(result.get("allergies", []))))
+            elif "error" in result:
+                failed.append(name)
+            else:
+                reports.append(result)
+
+        if conflicts:
+            names = "、".join(n for n, _ in conflicts)
+            allergies = "、".join(dict.fromkeys(a for _, al in conflicts for a in al.split("、") if a))
             line_bot_api.push_message(
                 user_id,
                 TextSendMessage(
-                    text=f"⚠️ 系統偵測到「{ingredient}」可能與您登記的過敏原（{allergies}）相關，"
+                    text=f"⚠️ 系統偵測到「{names}」可能與您登記的過敏原（{allergies}）相關，"
                     "請務必先諮詢醫師或藥師，暫不提供自動分析。"
                 ),
             )
-            _notify_family_of_alert(line_bot_api, user_id, ingredient, allergies)
-            return
+            for name, allergy_text in conflicts:
+                _notify_family_of_alert(line_bot_api, user_id, name, allergy_text)
 
-        if "error" in report:
-            line_bot_api.push_message(user_id, TextSendMessage(text=f"分析失敗：{report['error']}"))
-            return
+        if reports:
+            save_report_batch(user_id, reports, interactions)
+            bubbles = [_triage_bubble(n, al) for n, al in conflicts] + [_report_bubble(r) for r in reports]
+            alt = "用藥安全報告：" + "、".join(_display_name(r) for r in reports)
+            line_bot_api.push_message(user_id, build_result_flex(bubbles, alt))
+            if len(reports) > 1 and interactions:
+                line_bot_api.push_message(user_id, TextSendMessage(text="🔎 多種藥物同時服用的注意事項\n" + interactions))
 
-        save_report(user_id, report)
-        line_bot_api.push_message(user_id, build_traffic_light_flex(report))
+        if failed:
+            line_bot_api.push_message(
+                user_id, TextSendMessage(text="以下藥品分析失敗，請稍後再傳一次照片試試：" + "、".join(failed))
+            )
     except LineBotApiError as e:
         print(f"[LINE Warning] Failed to push analysis result: {e}")
     except Exception as e:
@@ -383,9 +433,14 @@ def process_text_message(user_id: str, reply_token: str, text: str):
         return
 
     try:
+        batch = latest.get("batch") or [latest]
+        names = [r.get("ingredient_zh") or r.get("ingredient", "") for r in batch]
+        report_text = "\n\n".join(f"【{n}】\n{r.get('report', '')}" for n, r in zip(names, batch))
+        if latest.get("interactions"):
+            report_text += "\n\n【藥物之間的注意事項】\n" + latest["interactions"]
         answer = answer_followup_question(
-            ingredient=latest.get("ingredient", ""),
-            report=latest.get("report", ""),
+            ingredient="、".join(names),
+            report=report_text,
             question=text,
             lang="zh",
         )

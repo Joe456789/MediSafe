@@ -81,6 +81,27 @@
     white-space: pre-wrap;
   }
 
+  .tabs {
+    display: flex;
+    gap: 8px;
+    overflow-x: auto;
+    margin-bottom: 14px;
+    padding-bottom: 4px;
+  }
+  .tab {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+    border-radius: 999px;
+    background: #fff;
+    border: 1px solid #dfe6e2;
+    font-size: 13px;
+    font-weight: bold;
+    color: #555;
+    cursor: pointer;
+  }
+  .tab.active { background: var(--line-green); border-color: var(--line-green); color: #fff; }
+  .tab .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 6px; }
+
   .disclaimer {
     font-size: 12px;
     color: #999;
@@ -94,6 +115,7 @@
   <div id="loading" class="state-box">正在載入您的用藥安全報告...</div>
   <div id="error" class="state-box" style="display:none;"></div>
   <div id="content" style="display:none;">
+    <div id="tabs" class="tabs" style="display:none;"></div>
     <div id="banner" class="banner">
       <div class="emoji" id="banner-emoji">🟡</div>
       <div class="status-label" id="banner-label">注意</div>
@@ -108,6 +130,11 @@
     <div class="card">
       <h2>💊 完整用藥小叮嚀</h2>
       <div class="report-body" id="report-body"></div>
+    </div>
+
+    <div class="card" id="interactions-card" style="display:none;">
+      <h2>🔎 藥物之間的注意事項</h2>
+      <div class="report-body" id="interactions-body"></div>
     </div>
   </div>
   <div class="disclaimer">本報告由 AI 生成，僅供參考，不能取代專業醫療建議，請務必諮詢醫師或藥師。</div>
@@ -140,36 +167,74 @@ function showError(message) {
   errorBox.textContent = message;
 }
 
-function renderReport(report) {
-  document.getElementById("loading").style.display = "none";
-  document.getElementById("content").style.display = "block";
+const DOT_COLORS = { safe: "#06C755", warning: "#f5a623", danger: "#e6473f" };
 
-  const meta = SAFETY_META[report.safety_level] || SAFETY_META.warning;
-  const banner = document.getElementById("banner");
-  banner.classList.add(meta.cls);
+function showItem(item) {
+  const meta = SAFETY_META[item.safety_level] || SAFETY_META.warning;
+  document.getElementById("banner").className = "banner " + meta.cls;
   document.getElementById("banner-emoji").textContent = meta.emoji;
   document.getElementById("banner-label").textContent = meta.label;
-  const zh = report.ingredient_zh || report.ingredient || "";
+  const zh = item.ingredient_zh || item.ingredient || "";
   document.getElementById("banner-ingredient").textContent =
-    zh && report.ingredient && zh !== report.ingredient ? `${zh}（${report.ingredient}）` : zh;
+    zh && item.ingredient && !zh.toLowerCase().includes(item.ingredient.toLowerCase()) ? `${zh}（${item.ingredient}）` : zh;
 
   const foodGrid = document.getElementById("food-grid");
-  const foodWarnings = report.food_warnings || {};
+  const foodWarnings = item.food_warnings || {};
   foodGrid.innerHTML = "";
   Object.keys(FOOD_LABELS).forEach((key) => {
     const info = FOOD_LABELS[key];
     const verdict = foodWarnings[key] === "avoid" ? "avoid" : "ok";
-    const item = document.createElement("div");
-    item.className = "food-item";
-    item.innerHTML = `
+    const el = document.createElement("div");
+    el.className = "food-item";
+    el.innerHTML = `
       <span class="icon">${info.icon}</span>
       <span>${info.name}</span>
       <span class="pill ${verdict}">${verdict === "avoid" ? "避免" : "可以"}</span>
     `;
-    foodGrid.appendChild(item);
+    foodGrid.appendChild(el);
   });
 
-  document.getElementById("report-body").textContent = report.report || "";
+  document.getElementById("report-body").textContent = item.report || "";
+}
+
+function renderReport(report) {
+  document.getElementById("loading").style.display = "none";
+  document.getElementById("content").style.display = "block";
+
+  const items = report.batch && report.batch.length ? report.batch : [report];
+  const tabs = document.getElementById("tabs");
+  tabs.innerHTML = "";
+
+  if (items.length > 1) {
+    tabs.style.display = "flex";
+    items.forEach((item, idx) => {
+      const tab = document.createElement("button");
+      tab.className = "tab" + (idx === 0 ? " active" : "");
+      const dot = document.createElement("span");
+      dot.className = "dot";
+      dot.style.background = DOT_COLORS[item.safety_level] || DOT_COLORS.warning;
+      tab.appendChild(dot);
+      tab.appendChild(document.createTextNode(item.ingredient_zh || item.ingredient || `藥品 ${idx + 1}`));
+      tab.addEventListener("click", () => {
+        tabs.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+        tab.classList.add("active");
+        showItem(item);
+      });
+      tabs.appendChild(tab);
+    });
+  } else {
+    tabs.style.display = "none";
+  }
+
+  const interactionsCard = document.getElementById("interactions-card");
+  if (items.length > 1 && report.interactions) {
+    interactionsCard.style.display = "block";
+    document.getElementById("interactions-body").textContent = report.interactions;
+  } else {
+    interactionsCard.style.display = "none";
+  }
+
+  showItem(items[0]);
 }
 
 async function fetchReport(userId) {

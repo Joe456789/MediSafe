@@ -100,6 +100,86 @@ def extract_ingredient_from_image(base64_data: str, mime_type: str) -> str:
     print(f"Extracted ingredient: {extracted_name}")
     return extracted_name
 
+MAX_INGREDIENTS_PER_IMAGE = 6
+
+
+def extract_ingredients_from_image(base64_data: str, mime_type: str) -> list:
+    """Vision Agent (multi-medicine): lists every distinct medicine/ingredient visible
+    on a prescription, medicine bag or several boxes. Falls back to the single-name
+    extractor if the structured response can't be parsed."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise Exception("GEMINI_API_KEY environment variable not set.")
+
+    client = genai.Client(api_key=api_key)
+    image_bytes = base64.b64decode(base64_data)
+
+    prompt = (
+        "Look at this image of a prescription, medicine bag, or medicine boxes. "
+        f"List EVERY distinct medicine or active ingredient you can identify, at most {MAX_INGREDIENTS_PER_IMAGE}. "
+        "Return ONLY a JSON array of strings, each the exact English generic name "
+        '(for example ["Acetaminophen", "Ibuprofen"]). '
+        "If only one medicine is visible, return a one-element array. "
+        "Do not include dosage, strength or brand packaging text."
+    )
+
+    print("Running multi-medicine Vision OCR on uploaded image...")
+    try:
+        response = call_gemini_with_retry(
+            client=client,
+            model="gemini-2.5-flash",
+            contents=[types.Part.from_bytes(data=image_bytes, mime_type=mime_type), prompt],
+            config=types.GenerateContentConfig(response_mime_type="application/json", temperature=0),
+        )
+        names = json.loads(response.text.strip())
+        if not isinstance(names, list):
+            raise ValueError("expected a JSON array")
+    except Exception as e:
+        print(f"[Vision Warning] Multi-medicine parse failed ({e}); falling back to single-name OCR")
+        return [extract_ingredient_from_image(base64_data, mime_type)]
+
+    cleaned, seen = [], set()
+    for n in names:
+        if not isinstance(n, str):
+            continue
+        n = n.strip()
+        if n and n.lower() not in seen:
+            seen.add(n.lower())
+            cleaned.append(n)
+    cleaned = cleaned[:MAX_INGREDIENTS_PER_IMAGE]
+    if not cleaned:
+        return [extract_ingredient_from_image(base64_data, mime_type)]
+    print(f"Extracted ingredients: {cleaned}")
+    return cleaned
+
+
+def summarize_drug_interactions(ingredients: list) -> str:
+    """Short Traditional Chinese note on notable interactions among several medicines.
+    Returns an empty string on any failure; this is a best-effort extra."""
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if not api_key or len(ingredients) < 2:
+        return ""
+    try:
+        client = genai.Client(api_key=api_key)
+        system_instruction = (
+            "你是 MediSafe AI 藥師助理。使用者同時拿到多種藥物，請用繁體中文、白話地列出這些藥物之間"
+            "『較知名、值得注意』的交互作用或重複成分，最多 4 點，每點一行、不超過 40 字，以「•」開頭。"
+            "若沒有明顯需要注意的，就寫一行「未發現特別需要注意的交互作用」。"
+            "不要建議調整劑量或停藥，最後一行固定寫：以上為 AI 整理，請務必向醫師或藥師確認。"
+        )
+        response = call_gemini_with_retry(
+            client=client,
+            model="gemini-2.5-flash",
+            contents="同時服用的藥物：" + "、".join(ingredients),
+            config=types.GenerateContentConfig(system_instruction=system_instruction, temperature=0.2),
+        )
+        text = re.sub(r"^[ \t]*[*\-][ \t]+", "• ", response.text.strip(), flags=re.M)
+        return text
+    except Exception as e:
+        print(f"[Interaction Warning] Could not summarize interactions: {e}")
+        return ""
+
+
 def analyze_ingredient(ingredient: str, bypass_triage: bool = False, lang: str = "en", user_allergies: list | None = None, patient_name: str = "John Doe") -> dict:
     # 0a. Per-user allergy check (e.g. LINE users with their own registered profile).
     # Done before the shared cache lookup and skips the MCP subprocess entirely,
@@ -191,7 +271,7 @@ You MUST output a valid JSON object with the following keys:
 2. "pill_type": "tablet", "capsule", or "liquid" (typical form of this medicine).
 3. "pill_color": "white", "red", "orange", "blue", "yellow", or "brown" (typical color).
 4. "food_warnings": { "alcohol": "avoid" or "safe", "dairy": "avoid" or "safe", "grapefruit": "avoid" or "safe", "caffeine": "avoid" or "safe" } (typical food conflicts).
-5. "ingredient_zh": 藥品成分最常見的繁體中文名稱（例如 Acetaminophen 寫「乙醯胺酚（普拿疼）」）；若 lang 為 en 或沒有通用中文譯名，請填入原英文名稱。
+5. "ingredient_zh": 藥品成分最常見的繁體中文名稱（例如 Acetaminophen 寫「乙醯胺酚（普拿疼）」）；只寫中文名稱，不要附上英文；若 lang 為 en 或沒有通用中文譯名，請填入原英文名稱。
 6. "report": "A warm, extremely simple safety summary for the general public in markdown. Use bullet points. The report MUST contain exactly three clear sections in markdown:
    - 💊 用藥小叮嚀 (How to Take / Important Guidelines): Practical details such as whether to take with food, what to do if a dose is missed.
    - ⚠️ 密切注意的副作用 (Side Effects to Watch): Simple list of common side effects (e.g. stomach upset) and severe allergy alerts (e.g. rashes).
